@@ -34,9 +34,9 @@ def generate_image_sdxl_with_lora(lora_model, prompt, output_dir):
     args.H = 512
     args.scale = 7.0
     args.sampler = 'dpmsolver++'
-    args.network_module = 'networks.lora'
-    args.network_weights = lora_model
-    args.network_mul = 1.0
+    args.network_module = ['networks.lora']
+    args.network_weights = [lora_model]
+    args.network_mul = [1.0]
     args.steps = 70
     args.batch_size = 1
     args.images_per_prompt = 1
