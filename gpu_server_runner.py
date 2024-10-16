@@ -7,6 +7,8 @@ from aws.aws_s3 import upload_image_to_s3
 
 from sdxl_gen_img import setup_parser, setup_logging, main
 
+from sdxl_gen_img_preloader import preload, preload_lora
+
 def extract_message(message_body):
     message = json.loads(message_body)
     return message['diaryId'], message['characterId'], message['prompt'], message['gridPosition']
@@ -25,7 +27,7 @@ def delete_output_images():
 def generate_image_sdxl_with_lora(lora_model, prompt, output_dir):
     parser = setup_parser()
     args = parser.parse_args()
-    
+
     args.ckpt = "./models/sd_xl_base_1.0_0.9vae.safetensors"
     args.outdir = output_dir
     args.xformers = True
@@ -43,7 +45,12 @@ def generate_image_sdxl_with_lora(lora_model, prompt, output_dir):
     args.prompt = prompt
 
     setup_logging(args)
-    main(args)
+
+    dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
+
+    networks, network_default_muls, network_pre_calc = preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device)
+
+    main(args, dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device, networks, network_default_muls, network_pre_calc)
 
 def run():
     while True:
