@@ -99,7 +99,7 @@ def run():
 
         for message_body, message_receipt_handle in messages:
             diary_id, character_id, prompt, grid_position = extract_message(message_body)
-            logger.info("Processing {diary_id}/{grid_position}...")}")
+            logger.info("Processing {diary_id}/{grid_position}...")
 
             output_dir = f"./output/{diary_id}_{grid_position}"
 
