@@ -2,6 +2,7 @@ import time
 import os
 import glob
 import json
+import logging
 from aws.aws_sqs import receive_messages, delete_message, send_image_success_message, send_image_failure_message
 from aws.aws_s3 import upload_image_to_s3
 
@@ -9,6 +10,7 @@ from sdxl_gen_img import setup_parser, setup_logging, main
 
 from sdxl_gen_img_preloader import preload, preload_lora
 
+logger = logging.getLogger(__name__)
 
 '''
 이 코드에서 Stable Diffusion 모델과 LoRA 모델을 preload합니다.
@@ -79,6 +81,10 @@ def get_image_path(folder_path):
     
     return png_files[0]
 
+def delete_file(file_path):
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
 def delete_output_images():
     pass
 
@@ -88,10 +94,12 @@ def run():
         messages = receive_messages()
 
         if not messages:
+            logger.info("No messages to process.")
             continue
 
         for message_body, message_receipt_handle in messages:
             diary_id, character_id, prompt, grid_position = extract_message(message_body)
+            logger.info("Processing {diary_id}/{grid_position}...")}")
 
             output_dir = f"./output/{diary_id}_{grid_position}"
 
@@ -101,10 +109,13 @@ def run():
 
                 upload_image_to_s3(image_path, diary_id, grid_position)
 
+                delete_file(image_path)
+
                 send_image_success_message(diary_id, grid_position)
             except KeyboardInterrupt as e:
                 raise e
             except Exception as e:
+                logger.error(f"An error occurred: {str(e)}")
                 send_image_failure_message(diary_id, grid_position)
             finally:
                 delete_message(message_receipt_handle)
