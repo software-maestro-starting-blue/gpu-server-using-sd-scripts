@@ -1472,9 +1472,684 @@ class BatchData(NamedTuple):
     base: BatchDataBase
     ext: BatchDataExt
 
-from gpu_server_runner import *
+'''
+FUNCTIONS FOR PRELOAD
+'''
 
-def main(args):
+def setup_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+
+    add_logging_arguments(parser)
+
+    parser.add_argument("--prompt", type=str, default=None, help="prompt / プロンプト")
+    parser.add_argument(
+        "--from_file",
+        type=str,
+        default=None,
+        help="if specified, load prompts from this file / 指定時はプロンプトをファイルから読み込む",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="interactive mode (generates one image) / 対話モード（生成される画像は1枚になります）",
+    )
+    parser.add_argument(
+        "--no_preview", action="store_true", help="do not show generated image in interactive mode / 対話モードで画像を表示しない"
+    )
+    parser.add_argument(
+        "--image_path", type=str, default=None, help="image to inpaint or to generate from / img2imgまたはinpaintを行う元画像"
+    )
+    parser.add_argument("--mask_path", type=str, default=None, help="mask in inpainting / inpaint時のマスク")
+    parser.add_argument("--strength", type=float, default=None, help="img2img strength / img2img時のstrength")
+    parser.add_argument("--images_per_prompt", type=int, default=1, help="number of images per prompt / プロンプトあたりの出力枚数")
+    parser.add_argument("--outdir", type=str, default="outputs", help="dir to write results to / 生成画像の出力先")
+    parser.add_argument(
+        "--sequential_file_name", action="store_true", help="sequential output file name / 生成画像のファイル名を連番にする"
+    )
+    parser.add_argument(
+        "--use_original_file_name",
+        action="store_true",
+        help="prepend original file name in img2img / img2imgで元画像のファイル名を生成画像のファイル名の先頭に付ける",
+    )
+    # parser.add_argument("--ddim_eta", type=float, default=0.0, help="ddim eta (eta=0.0 corresponds to deterministic sampling", )
+    parser.add_argument("--n_iter", type=int, default=1, help="sample this often / 繰り返し回数")
+    parser.add_argument("--H", type=int, default=None, help="image height, in pixel space / 生成画像高さ")
+    parser.add_argument("--W", type=int, default=None, help="image width, in pixel space / 生成画像幅")
+    parser.add_argument(
+        "--original_height",
+        type=int,
+        default=None,
+        help="original height for SDXL conditioning / SDXLの条件付けに用いるoriginal heightの値",
+    )
+    parser.add_argument(
+        "--original_width",
+        type=int,
+        default=None,
+        help="original width for SDXL conditioning / SDXLの条件付けに用いるoriginal widthの値",
+    )
+    parser.add_argument(
+        "--original_height_negative",
+        type=int,
+        default=None,
+        help="original height for SDXL unconditioning / SDXLのネガティブ条件付けに用いるoriginal heightの値",
+    )
+    parser.add_argument(
+        "--original_width_negative",
+        type=int,
+        default=None,
+        help="original width for SDXL unconditioning / SDXLのネガティブ条件付けに用いるoriginal widthの値",
+    )
+    parser.add_argument(
+        "--crop_top", type=int, default=None, help="crop top for SDXL conditioning / SDXLの条件付けに用いるcrop topの値"
+    )
+    parser.add_argument(
+        "--crop_left", type=int, default=None, help="crop left for SDXL conditioning / SDXLの条件付けに用いるcrop leftの値"
+    )
+    parser.add_argument("--batch_size", type=int, default=1, help="batch size / バッチサイズ")
+    parser.add_argument(
+        "--vae_batch_size",
+        type=float,
+        default=None,
+        help="batch size for VAE, < 1.0 for ratio / VAE処理時のバッチサイズ、1未満の値の場合は通常バッチサイズの比率",
+    )
+    parser.add_argument(
+        "--vae_slices",
+        type=int,
+        default=None,
+        help="number of slices to split image into for VAE to reduce VRAM usage, None for no splitting (default), slower if specified. 16 or 32 recommended / VAE処理時にVRAM使用量削減のため画像を分割するスライス数、Noneの場合は分割しない（デフォルト）、指定すると遅くなる。16か32程度を推奨",
+    )
+    parser.add_argument(
+        "--no_half_vae", action="store_true", help="do not use fp16/bf16 precision for VAE / VAE処理時にfp16/bf16を使わない"
+    )
+    parser.add_argument("--steps", type=int, default=50, help="number of ddim sampling steps / サンプリングステップ数")
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        default="ddim",
+        choices=[
+            "ddim",
+            "pndm",
+            "lms",
+            "euler",
+            "euler_a",
+            "heun",
+            "dpm_2",
+            "dpm_2_a",
+            "dpmsolver",
+            "dpmsolver++",
+            "dpmsingle",
+            "k_lms",
+            "k_euler",
+            "k_euler_a",
+            "k_dpm_2",
+            "k_dpm_2_a",
+        ],
+        help=f"sampler (scheduler) type / サンプラー（スケジューラ）の種類",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=7.5,
+        help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty)) / guidance scale",
+    )
+    parser.add_argument(
+        "--ckpt", type=str, default=None, help="path to checkpoint of model / モデルのcheckpointファイルまたはディレクトリ"
+    )
+    parser.add_argument(
+        "--vae",
+        type=str,
+        default=None,
+        help="path to checkpoint of vae to replace / VAEを入れ替える場合、VAEのcheckpointファイルまたはディレクトリ",
+    )
+    parser.add_argument(
+        "--tokenizer_cache_dir",
+        type=str,
+        default=None,
+        help="directory for caching Tokenizer (for offline training) / Tokenizerをキャッシュするディレクトリ（ネット接続なしでの学習のため）",
+    )
+    # parser.add_argument("--replace_clip_l14_336", action='store_true',
+    #                     help="Replace CLIP (Text Encoder) to l/14@336 / CLIP(Text Encoder)をl/14@336に入れ替える")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="seed, or seed of seeds in multiple generation / 1枚生成時のseed、または複数枚生成時の乱数seedを決めるためのseed",
+    )
+    parser.add_argument(
+        "--iter_same_seed",
+        action="store_true",
+        help="use same seed for all prompts in iteration if no seed specified / 乱数seedの指定がないとき繰り返し内はすべて同じseedを使う（プロンプト間の差異の比較用）",
+    )
+    parser.add_argument("--fp16", action="store_true", help="use fp16 / fp16を指定し省メモリ化する")
+    parser.add_argument("--bf16", action="store_true", help="use bfloat16 / bfloat16を指定し省メモリ化する")
+    parser.add_argument("--xformers", action="store_true", help="use xformers / xformersを使用し高速化する")
+    parser.add_argument("--sdpa", action="store_true", help="use sdpa in PyTorch 2 / sdpa")
+    parser.add_argument(
+        "--diffusers_xformers",
+        action="store_true",
+        help="use xformers by diffusers (Hypernetworks doesn't work) / Diffusersでxformersを使用する（Hypernetwork利用不可）",
+    )
+    parser.add_argument(
+        "--opt_channels_last",
+        action="store_true",
+        help="set channels last option to model / モデルにchannels lastを指定し最適化する",
+    )
+    parser.add_argument(
+        "--network_module",
+        type=str,
+        default=None,
+        nargs="*",
+        help="additional network module to use / 追加ネットワークを使う時そのモジュール名",
+    )
+    parser.add_argument(
+        "--network_weights", type=str, default=None, nargs="*", help="additional network weights to load / 追加ネットワークの重み"
+    )
+    parser.add_argument(
+        "--network_mul", type=float, default=None, nargs="*", help="additional network multiplier / 追加ネットワークの効果の倍率"
+    )
+    parser.add_argument(
+        "--network_args",
+        type=str,
+        default=None,
+        nargs="*",
+        help="additional arguments for network (key=value) / ネットワークへの追加の引数",
+    )
+    parser.add_argument(
+        "--network_show_meta", action="store_true", help="show metadata of network model / ネットワークモデルのメタデータを表示する"
+    )
+    parser.add_argument(
+        "--network_merge_n_models",
+        type=int,
+        default=None,
+        help="merge this number of networks / この数だけネットワークをマージする",
+    )
+    parser.add_argument(
+        "--network_merge", action="store_true", help="merge network weights to original model / ネットワークの重みをマージする"
+    )
+    parser.add_argument(
+        "--network_pre_calc",
+        action="store_true",
+        help="pre-calculate network for generation / ネットワークのあらかじめ計算して生成する",
+    )
+    parser.add_argument(
+        "--network_regional_mask_max_color_codes",
+        type=int,
+        default=None,
+        help="max color codes for regional mask (default is None, mask by channel) / regional maskの最大色数（デフォルトはNoneでチャンネルごとのマスク）",
+    )
+    parser.add_argument(
+        "--textual_inversion_embeddings",
+        type=str,
+        default=None,
+        nargs="*",
+        help="Embeddings files of Textual Inversion / Textual Inversionのembeddings",
+    )
+    parser.add_argument(
+        "--clip_skip", type=int, default=None, help="layer number from bottom to use in CLIP / CLIPの後ろからn層目の出力を使う"
+    )
+    parser.add_argument(
+        "--max_embeddings_multiples",
+        type=int,
+        default=None,
+        help="max embedding multiples, max token length is 75 * multiples / トークン長をデフォルトの何倍とするか 75*この値 がトークン長となる",
+    )
+    parser.add_argument(
+        "--guide_image_path", type=str, default=None, nargs="*", help="image to CLIP guidance / CLIP guided SDでガイドに使う画像"
+    )
+    parser.add_argument(
+        "--highres_fix_scale",
+        type=float,
+        default=None,
+        help="enable highres fix, reso scale for 1st stage / highres fixを有効にして最初の解像度をこのscaleにする",
+    )
+    parser.add_argument(
+        "--highres_fix_steps",
+        type=int,
+        default=28,
+        help="1st stage steps for highres fix / highres fixの最初のステージのステップ数",
+    )
+    parser.add_argument(
+        "--highres_fix_strength",
+        type=float,
+        default=None,
+        help="1st stage img2img strength for highres fix / highres fixの最初のステージのimg2img時のstrength、省略時はstrengthと同じ",
+    )
+    parser.add_argument(
+        "--highres_fix_save_1st",
+        action="store_true",
+        help="save 1st stage images for highres fix / highres fixの最初のステージの画像を保存する",
+    )
+    parser.add_argument(
+        "--highres_fix_latents_upscaling",
+        action="store_true",
+        help="use latents upscaling for highres fix / highres fixでlatentで拡大する",
+    )
+    parser.add_argument(
+        "--highres_fix_upscaler",
+        type=str,
+        default=None,
+        help="upscaler module for highres fix / highres fixで使うupscalerのモジュール名",
+    )
+    parser.add_argument(
+        "--highres_fix_upscaler_args",
+        type=str,
+        default=None,
+        help="additional arguments for upscaler (key=value) / upscalerへの追加の引数",
+    )
+    parser.add_argument(
+        "--highres_fix_disable_control_net",
+        action="store_true",
+        help="disable ControlNet for highres fix / highres fixでControlNetを使わない",
+    )
+
+    parser.add_argument(
+        "--negative_scale",
+        type=float,
+        default=None,
+        help="set another guidance scale for negative prompt / ネガティブプロンプトのscaleを指定する",
+    )
+
+    parser.add_argument(
+        "--control_net_lllite_models",
+        type=str,
+        default=None,
+        nargs="*",
+        help="ControlNet models to use / 使用するControlNetのモデル名",
+    )
+    # parser.add_argument(
+    #     "--control_net_models", type=str, default=None, nargs="*", help="ControlNet models to use / 使用するControlNetのモデル名"
+    # )
+    # parser.add_argument(
+    #     "--control_net_preps", type=str, default=None, nargs="*", help="ControlNet preprocess to use / 使用するControlNetのプリプロセス名"
+    # )
+    parser.add_argument(
+        "--control_net_multipliers", type=float, default=None, nargs="*", help="ControlNet multiplier / ControlNetの適用率"
+    )
+    parser.add_argument(
+        "--control_net_ratios",
+        type=float,
+        default=None,
+        nargs="*",
+        help="ControlNet guidance ratio for steps / ControlNetでガイドするステップ比率",
+    )
+    parser.add_argument(
+        "--clip_vision_strength",
+        type=float,
+        default=None,
+        help="enable CLIP Vision Conditioning for img2img with this strength / img2imgでCLIP Vision Conditioningを有効にしてこのstrengthで処理する",
+    )
+
+    # Deep Shrink
+    parser.add_argument(
+        "--ds_depth_1",
+        type=int,
+        default=None,
+        help="Enable Deep Shrink with this depth 1, valid values are 0 to 8 / Deep Shrinkをこのdepthで有効にする",
+    )
+    parser.add_argument(
+        "--ds_timesteps_1",
+        type=int,
+        default=650,
+        help="Apply Deep Shrink depth 1 until this timesteps / Deep Shrink depth 1を適用するtimesteps",
+    )
+    parser.add_argument("--ds_depth_2", type=int, default=None, help="Deep Shrink depth 2 / Deep Shrinkのdepth 2")
+    parser.add_argument(
+        "--ds_timesteps_2",
+        type=int,
+        default=650,
+        help="Apply Deep Shrink depth 2 until this timesteps / Deep Shrink depth 2を適用するtimesteps",
+    )
+    parser.add_argument(
+        "--ds_ratio", type=float, default=0.5, help="Deep Shrink ratio for downsampling / Deep Shrinkのdownsampling比率"
+    )
+
+    # gradual latent
+    parser.add_argument(
+        "--gradual_latent_timesteps",
+        type=int,
+        default=None,
+        help="enable Gradual Latent hires fix and apply upscaling from this timesteps / Gradual Latent hires fixをこのtimestepsで有効にし、このtimestepsからアップスケーリングを適用する",
+    )
+    parser.add_argument(
+        "--gradual_latent_ratio",
+        type=float,
+        default=0.5,
+        help=" this size ratio, 0.5 means 1/2 / Gradual Latent hires fixをこのサイズ比率で有効にする、0.5は1/2を意味する",
+    )
+    parser.add_argument(
+        "--gradual_latent_ratio_step",
+        type=float,
+        default=0.125,
+        help="step to increase ratio for Gradual Latent / Gradual Latentのratioをどのくらいずつ上げるか",
+    )
+    parser.add_argument(
+        "--gradual_latent_every_n_steps",
+        type=int,
+        default=3,
+        help="steps to increase size of latents every this steps for Gradual Latent / Gradual Latentでlatentsのサイズをこのステップごとに上げる",
+    )
+    parser.add_argument(
+        "--gradual_latent_s_noise",
+        type=float,
+        default=1.0,
+        help="s_noise for Gradual Latent / Gradual Latentのs_noise",
+    )
+    parser.add_argument(
+        "--gradual_latent_unsharp_params",
+        type=str,
+        default=None,
+        help="unsharp mask parameters for Gradual Latent: ksize, sigma, strength, target-x (1 means True). `3,0.5,0.5,1` or `3,1.0,1.0,0` is recommended /"
+        + " Gradual Latentのunsharp maskのパラメータ: ksize, sigma, strength, target-x. `3,0.5,0.5,1` または `3,1.0,1.0,0` が推奨",
+    )
+
+    # # parser.add_argument(
+    #     "--control_net_image_path", type=str, default=None, nargs="*", help="image for ControlNet guidance / ControlNetでガイドに使う画像"
+    # )
+
+    return parser
+
+
+def preload(args):
+    if args.fp16:
+        dtype = torch.float16
+    elif args.bf16:
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float32
+
+    highres_fix = args.highres_fix_scale is not None
+    # assert not highres_fix or args.image_path is None, f"highres_fix doesn't work with img2img / highres_fixはimg2imgと同時に使えません"
+
+    # モデルを読み込む
+    if not os.path.isfile(args.ckpt):  # ファイルがないならパターンで探し、一つだけ該当すればそれを使う
+        files = glob.glob(args.ckpt)
+        if len(files) == 1:
+            args.ckpt = files[0]
+
+    (_, text_encoder1, text_encoder2, vae, unet, _, _) = sdxl_train_util._load_target_model(
+        args.ckpt, args.vae, sdxl_model_util.MODEL_VERSION_SDXL_BASE_V1_0, dtype
+    )
+    unet: InferSdxlUNet2DConditionModel = InferSdxlUNet2DConditionModel(unet)
+
+    # xformers、Hypernetwork対応
+    if not args.diffusers_xformers:
+        mem_eff = not (args.xformers or args.sdpa)
+        replace_unet_modules(unet, mem_eff, args.xformers, args.sdpa)
+        replace_vae_modules(vae, mem_eff, args.xformers, args.sdpa)
+
+    # tokenizerを読み込む
+    logger.info("loading tokenizer")
+    tokenizer1, tokenizer2 = sdxl_train_util.load_tokenizers(args)
+
+    # schedulerを用意する
+    sched_init_args = {}
+    has_steps_offset = True
+    has_clip_sample = True
+    scheduler_num_noises_per_step = 1
+
+    if args.sampler == "ddim":
+        scheduler_cls = DDIMScheduler
+        scheduler_module = diffusers.schedulers.scheduling_ddim
+    elif args.sampler == "ddpm":  # ddpmはおかしくなるのでoptionから外してある
+        scheduler_cls = DDPMScheduler
+        scheduler_module = diffusers.schedulers.scheduling_ddpm
+    elif args.sampler == "pndm":
+        scheduler_cls = PNDMScheduler
+        scheduler_module = diffusers.schedulers.scheduling_pndm
+        has_clip_sample = False
+    elif args.sampler == "lms" or args.sampler == "k_lms":
+        scheduler_cls = LMSDiscreteScheduler
+        scheduler_module = diffusers.schedulers.scheduling_lms_discrete
+        has_clip_sample = False
+    elif args.sampler == "euler" or args.sampler == "k_euler":
+        scheduler_cls = EulerDiscreteScheduler
+        scheduler_module = diffusers.schedulers.scheduling_euler_discrete
+        has_clip_sample = False
+    elif args.sampler == "euler_a" or args.sampler == "k_euler_a":
+        scheduler_cls = EulerAncestralDiscreteSchedulerGL
+        scheduler_module = diffusers.schedulers.scheduling_euler_ancestral_discrete
+        has_clip_sample = False
+    elif args.sampler == "dpmsolver" or args.sampler == "dpmsolver++":
+        scheduler_cls = DPMSolverMultistepScheduler
+        sched_init_args["algorithm_type"] = args.sampler
+        scheduler_module = diffusers.schedulers.scheduling_dpmsolver_multistep
+        has_clip_sample = False
+    elif args.sampler == "dpmsingle":
+        scheduler_cls = DPMSolverSinglestepScheduler
+        scheduler_module = diffusers.schedulers.scheduling_dpmsolver_singlestep
+        has_clip_sample = False
+        has_steps_offset = False
+    elif args.sampler == "heun":
+        scheduler_cls = HeunDiscreteScheduler
+        scheduler_module = diffusers.schedulers.scheduling_heun_discrete
+        has_clip_sample = False
+    elif args.sampler == "dpm_2" or args.sampler == "k_dpm_2":
+        scheduler_cls = KDPM2DiscreteScheduler
+        scheduler_module = diffusers.schedulers.scheduling_k_dpm_2_discrete
+        has_clip_sample = False
+    elif args.sampler == "dpm_2_a" or args.sampler == "k_dpm_2_a":
+        scheduler_cls = KDPM2AncestralDiscreteScheduler
+        scheduler_module = diffusers.schedulers.scheduling_k_dpm_2_ancestral_discrete
+        scheduler_num_noises_per_step = 2
+        has_clip_sample = False
+
+    # 警告を出さないようにする
+    if has_steps_offset:
+        sched_init_args["steps_offset"] = 1
+    if has_clip_sample:
+        sched_init_args["clip_sample"] = False
+
+    # samplerの乱数をあらかじめ指定するための処理
+
+    # replace randn
+    class NoiseManager:
+        def __init__(self):
+            self.sampler_noises = None
+            self.sampler_noise_index = 0
+
+        def reset_sampler_noises(self, noises):
+            self.sampler_noise_index = 0
+            self.sampler_noises = noises
+
+        def randn(self, shape, device=None, dtype=None, layout=None, generator=None):
+            # logger.info("replacing", shape, len(self.sampler_noises), self.sampler_noise_index)
+            if self.sampler_noises is not None and self.sampler_noise_index < len(self.sampler_noises):
+                noise = self.sampler_noises[self.sampler_noise_index]
+                if shape != noise.shape:
+                    noise = None
+            else:
+                noise = None
+
+            if noise == None:
+                logger.warning(f"unexpected noise request: {self.sampler_noise_index}, {shape}")
+                noise = torch.randn(shape, dtype=dtype, device=device, generator=generator)
+
+            self.sampler_noise_index += 1
+            return noise
+
+    class TorchRandReplacer:
+        def __init__(self, noise_manager):
+            self.noise_manager = noise_manager
+
+        def __getattr__(self, item):
+            if item == "randn":
+                return self.noise_manager.randn
+            if hasattr(torch, item):
+                return getattr(torch, item)
+            raise AttributeError("'{}' object has no attribute '{}'".format(type(self).__name__, item))
+
+    noise_manager = NoiseManager()
+    if scheduler_module is not None:
+        scheduler_module.torch = TorchRandReplacer(noise_manager)
+
+    scheduler = scheduler_cls(
+        num_train_timesteps=SCHEDULER_TIMESTEPS,
+        beta_start=SCHEDULER_LINEAR_START,
+        beta_end=SCHEDULER_LINEAR_END,
+        beta_schedule=SCHEDLER_SCHEDULE,
+        **sched_init_args,
+    )
+
+    # ↓以下は結局PipeでFalseに設定されるので意味がなかった
+    # # clip_sample=Trueにする
+    # if hasattr(scheduler.config, "clip_sample") and scheduler.config.clip_sample is False:
+    #     logger.info("set clip_sample to True")
+    #     scheduler.config.clip_sample = True
+
+    # deviceを決定する
+    device = get_preferred_device()
+
+    # custom pipelineをコピったやつを生成する
+    if args.vae_slices:
+        from library.slicing_vae import SlicingAutoencoderKL
+
+        sli_vae = SlicingAutoencoderKL(
+            act_fn="silu",
+            block_out_channels=(128, 256, 512, 512),
+            down_block_types=["DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D"],
+            in_channels=3,
+            latent_channels=4,
+            layers_per_block=2,
+            norm_num_groups=32,
+            out_channels=3,
+            sample_size=512,
+            up_block_types=["UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D"],
+            num_slices=args.vae_slices,
+        )
+        sli_vae.load_state_dict(vae.state_dict())  # vaeのパラメータをコピーする
+        vae = sli_vae
+        del sli_vae
+
+    vae_dtype = dtype
+    if args.no_half_vae:
+        logger.info("set vae_dtype to float32")
+        vae_dtype = torch.float32
+    vae.to(vae_dtype).to(device)
+    vae.eval()
+
+    text_encoder1.to(dtype).to(device)
+    text_encoder2.to(dtype).to(device)
+    unet.to(dtype).to(device)
+    text_encoder1.eval()
+    text_encoder2.eval()
+    unet.eval()
+
+    return dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device
+
+def preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device):
+    # networkを組み込む
+    if args.network_module:
+        networks = []
+        network_default_muls = []
+        network_pre_calc = args.network_pre_calc
+
+        # merge関連の引数を統合する
+        if args.network_merge:
+            network_merge = len(args.network_module)  # all networks are merged
+        elif args.network_merge_n_models:
+            network_merge = args.network_merge_n_models
+        else:
+            network_merge = 0
+        logger.info(f"network_merge: {network_merge}")
+
+        for i, network_module in enumerate(args.network_module):
+            logger.info(f"import network module: {network_module}")
+            imported_module = importlib.import_module(network_module)
+
+            network_mul = 1.0 if args.network_mul is None or len(args.network_mul) <= i else args.network_mul[i]
+
+            net_kwargs = {}
+            if args.network_args and i < len(args.network_args):
+                network_args = args.network_args[i]
+                # TODO escape special chars
+                network_args = network_args.split(";")
+                for net_arg in network_args:
+                    key, value = net_arg.split("=")
+                    net_kwargs[key] = value
+
+            if args.network_weights is None or len(args.network_weights) <= i:
+                raise ValueError("No weight. Weight is required.")
+
+            network_weight = args.network_weights[i]
+            logger.info(f"load network weights from: {network_weight}")
+
+            if model_util.is_safetensors(network_weight) and args.network_show_meta:
+                from safetensors.torch import safe_open
+
+                with safe_open(network_weight, framework="pt") as f:
+                    metadata = f.metadata()
+                if metadata is not None:
+                    logger.info(f"metadata for: {network_weight}: {metadata}")
+
+            network, weights_sd = imported_module.create_network_from_weights(
+                network_mul, network_weight, vae, [text_encoder1, text_encoder2], unet, for_inference=True, **net_kwargs
+            )
+            if network is None:
+                return
+
+            mergeable = network.is_mergeable()
+            if network_merge and not mergeable:
+                logger.warning("network is not mergiable. ignore merge option.")
+
+            if not mergeable or i >= network_merge:
+                # not merging
+                network.apply_to([text_encoder1, text_encoder2], unet)
+                info = network.load_state_dict(weights_sd, False)  # network.load_weightsを使うようにするとよい
+                logger.info(f"weights are loaded: {info}")
+
+                if args.opt_channels_last:
+                    network.to(memory_format=torch.channels_last)
+                network.to(dtype).to(device)
+
+                if network_pre_calc:
+                    logger.info("backup original weights")
+                    network.backup_weights()
+
+                networks.append(network)
+                network_default_muls.append(network_mul)
+            else:
+                network.merge_to([text_encoder1, text_encoder2], unet, weights_sd, dtype, device)
+
+    else:
+        networks = []
+    return networks, network_default_muls, network_pre_calc
+
+'''
+PRELOAD MODELS
+'''
+
+parser = setup_parser()
+args = parser.parse_args()
+
+args.ckpt = "./models/sd_xl_base_1.0_0.9vae.safetensors"
+args.xformers = True
+args.bf16 = True
+args.W = 512
+args.H = 512
+args.scale = 7.0
+args.sampler = 'dpmsolver++'
+args.steps = 70
+args.batch_size = 1
+args.images_per_prompt = 1
+
+setup_logging(args)
+
+
+args.network_module = ['networks.lora']
+args.network_weights = [os.environ("CHARACTER_LORA_PATH")]
+args.network_mul = [float(os.environ("CHARACTER_LORA_MUL"))]
+
+# Preload models
+dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
+networks, network_default_muls, network_pre_calc = preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device)
+
+
+
+def main(output_dir, prompt):
+
+    args.outdir = output_dir
+    args.prompt = prompt
+
     # upscalerの指定があれば取得する
     upscaler = None
     if args.highres_fix_upscaler:
@@ -2569,378 +3244,6 @@ def main(args):
 
     logger.info("done!")
 
-
-def setup_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-
-    add_logging_arguments(parser)
-
-    parser.add_argument("--prompt", type=str, default=None, help="prompt / プロンプト")
-    parser.add_argument(
-        "--from_file",
-        type=str,
-        default=None,
-        help="if specified, load prompts from this file / 指定時はプロンプトをファイルから読み込む",
-    )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="interactive mode (generates one image) / 対話モード（生成される画像は1枚になります）",
-    )
-    parser.add_argument(
-        "--no_preview", action="store_true", help="do not show generated image in interactive mode / 対話モードで画像を表示しない"
-    )
-    parser.add_argument(
-        "--image_path", type=str, default=None, help="image to inpaint or to generate from / img2imgまたはinpaintを行う元画像"
-    )
-    parser.add_argument("--mask_path", type=str, default=None, help="mask in inpainting / inpaint時のマスク")
-    parser.add_argument("--strength", type=float, default=None, help="img2img strength / img2img時のstrength")
-    parser.add_argument("--images_per_prompt", type=int, default=1, help="number of images per prompt / プロンプトあたりの出力枚数")
-    parser.add_argument("--outdir", type=str, default="outputs", help="dir to write results to / 生成画像の出力先")
-    parser.add_argument(
-        "--sequential_file_name", action="store_true", help="sequential output file name / 生成画像のファイル名を連番にする"
-    )
-    parser.add_argument(
-        "--use_original_file_name",
-        action="store_true",
-        help="prepend original file name in img2img / img2imgで元画像のファイル名を生成画像のファイル名の先頭に付ける",
-    )
-    # parser.add_argument("--ddim_eta", type=float, default=0.0, help="ddim eta (eta=0.0 corresponds to deterministic sampling", )
-    parser.add_argument("--n_iter", type=int, default=1, help="sample this often / 繰り返し回数")
-    parser.add_argument("--H", type=int, default=None, help="image height, in pixel space / 生成画像高さ")
-    parser.add_argument("--W", type=int, default=None, help="image width, in pixel space / 生成画像幅")
-    parser.add_argument(
-        "--original_height",
-        type=int,
-        default=None,
-        help="original height for SDXL conditioning / SDXLの条件付けに用いるoriginal heightの値",
-    )
-    parser.add_argument(
-        "--original_width",
-        type=int,
-        default=None,
-        help="original width for SDXL conditioning / SDXLの条件付けに用いるoriginal widthの値",
-    )
-    parser.add_argument(
-        "--original_height_negative",
-        type=int,
-        default=None,
-        help="original height for SDXL unconditioning / SDXLのネガティブ条件付けに用いるoriginal heightの値",
-    )
-    parser.add_argument(
-        "--original_width_negative",
-        type=int,
-        default=None,
-        help="original width for SDXL unconditioning / SDXLのネガティブ条件付けに用いるoriginal widthの値",
-    )
-    parser.add_argument(
-        "--crop_top", type=int, default=None, help="crop top for SDXL conditioning / SDXLの条件付けに用いるcrop topの値"
-    )
-    parser.add_argument(
-        "--crop_left", type=int, default=None, help="crop left for SDXL conditioning / SDXLの条件付けに用いるcrop leftの値"
-    )
-    parser.add_argument("--batch_size", type=int, default=1, help="batch size / バッチサイズ")
-    parser.add_argument(
-        "--vae_batch_size",
-        type=float,
-        default=None,
-        help="batch size for VAE, < 1.0 for ratio / VAE処理時のバッチサイズ、1未満の値の場合は通常バッチサイズの比率",
-    )
-    parser.add_argument(
-        "--vae_slices",
-        type=int,
-        default=None,
-        help="number of slices to split image into for VAE to reduce VRAM usage, None for no splitting (default), slower if specified. 16 or 32 recommended / VAE処理時にVRAM使用量削減のため画像を分割するスライス数、Noneの場合は分割しない（デフォルト）、指定すると遅くなる。16か32程度を推奨",
-    )
-    parser.add_argument(
-        "--no_half_vae", action="store_true", help="do not use fp16/bf16 precision for VAE / VAE処理時にfp16/bf16を使わない"
-    )
-    parser.add_argument("--steps", type=int, default=50, help="number of ddim sampling steps / サンプリングステップ数")
-    parser.add_argument(
-        "--sampler",
-        type=str,
-        default="ddim",
-        choices=[
-            "ddim",
-            "pndm",
-            "lms",
-            "euler",
-            "euler_a",
-            "heun",
-            "dpm_2",
-            "dpm_2_a",
-            "dpmsolver",
-            "dpmsolver++",
-            "dpmsingle",
-            "k_lms",
-            "k_euler",
-            "k_euler_a",
-            "k_dpm_2",
-            "k_dpm_2_a",
-        ],
-        help=f"sampler (scheduler) type / サンプラー（スケジューラ）の種類",
-    )
-    parser.add_argument(
-        "--scale",
-        type=float,
-        default=7.5,
-        help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty)) / guidance scale",
-    )
-    parser.add_argument(
-        "--ckpt", type=str, default=None, help="path to checkpoint of model / モデルのcheckpointファイルまたはディレクトリ"
-    )
-    parser.add_argument(
-        "--vae",
-        type=str,
-        default=None,
-        help="path to checkpoint of vae to replace / VAEを入れ替える場合、VAEのcheckpointファイルまたはディレクトリ",
-    )
-    parser.add_argument(
-        "--tokenizer_cache_dir",
-        type=str,
-        default=None,
-        help="directory for caching Tokenizer (for offline training) / Tokenizerをキャッシュするディレクトリ（ネット接続なしでの学習のため）",
-    )
-    # parser.add_argument("--replace_clip_l14_336", action='store_true',
-    #                     help="Replace CLIP (Text Encoder) to l/14@336 / CLIP(Text Encoder)をl/14@336に入れ替える")
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="seed, or seed of seeds in multiple generation / 1枚生成時のseed、または複数枚生成時の乱数seedを決めるためのseed",
-    )
-    parser.add_argument(
-        "--iter_same_seed",
-        action="store_true",
-        help="use same seed for all prompts in iteration if no seed specified / 乱数seedの指定がないとき繰り返し内はすべて同じseedを使う（プロンプト間の差異の比較用）",
-    )
-    parser.add_argument("--fp16", action="store_true", help="use fp16 / fp16を指定し省メモリ化する")
-    parser.add_argument("--bf16", action="store_true", help="use bfloat16 / bfloat16を指定し省メモリ化する")
-    parser.add_argument("--xformers", action="store_true", help="use xformers / xformersを使用し高速化する")
-    parser.add_argument("--sdpa", action="store_true", help="use sdpa in PyTorch 2 / sdpa")
-    parser.add_argument(
-        "--diffusers_xformers",
-        action="store_true",
-        help="use xformers by diffusers (Hypernetworks doesn't work) / Diffusersでxformersを使用する（Hypernetwork利用不可）",
-    )
-    parser.add_argument(
-        "--opt_channels_last",
-        action="store_true",
-        help="set channels last option to model / モデルにchannels lastを指定し最適化する",
-    )
-    parser.add_argument(
-        "--network_module",
-        type=str,
-        default=None,
-        nargs="*",
-        help="additional network module to use / 追加ネットワークを使う時そのモジュール名",
-    )
-    parser.add_argument(
-        "--network_weights", type=str, default=None, nargs="*", help="additional network weights to load / 追加ネットワークの重み"
-    )
-    parser.add_argument(
-        "--network_mul", type=float, default=None, nargs="*", help="additional network multiplier / 追加ネットワークの効果の倍率"
-    )
-    parser.add_argument(
-        "--network_args",
-        type=str,
-        default=None,
-        nargs="*",
-        help="additional arguments for network (key=value) / ネットワークへの追加の引数",
-    )
-    parser.add_argument(
-        "--network_show_meta", action="store_true", help="show metadata of network model / ネットワークモデルのメタデータを表示する"
-    )
-    parser.add_argument(
-        "--network_merge_n_models",
-        type=int,
-        default=None,
-        help="merge this number of networks / この数だけネットワークをマージする",
-    )
-    parser.add_argument(
-        "--network_merge", action="store_true", help="merge network weights to original model / ネットワークの重みをマージする"
-    )
-    parser.add_argument(
-        "--network_pre_calc",
-        action="store_true",
-        help="pre-calculate network for generation / ネットワークのあらかじめ計算して生成する",
-    )
-    parser.add_argument(
-        "--network_regional_mask_max_color_codes",
-        type=int,
-        default=None,
-        help="max color codes for regional mask (default is None, mask by channel) / regional maskの最大色数（デフォルトはNoneでチャンネルごとのマスク）",
-    )
-    parser.add_argument(
-        "--textual_inversion_embeddings",
-        type=str,
-        default=None,
-        nargs="*",
-        help="Embeddings files of Textual Inversion / Textual Inversionのembeddings",
-    )
-    parser.add_argument(
-        "--clip_skip", type=int, default=None, help="layer number from bottom to use in CLIP / CLIPの後ろからn層目の出力を使う"
-    )
-    parser.add_argument(
-        "--max_embeddings_multiples",
-        type=int,
-        default=None,
-        help="max embedding multiples, max token length is 75 * multiples / トークン長をデフォルトの何倍とするか 75*この値 がトークン長となる",
-    )
-    parser.add_argument(
-        "--guide_image_path", type=str, default=None, nargs="*", help="image to CLIP guidance / CLIP guided SDでガイドに使う画像"
-    )
-    parser.add_argument(
-        "--highres_fix_scale",
-        type=float,
-        default=None,
-        help="enable highres fix, reso scale for 1st stage / highres fixを有効にして最初の解像度をこのscaleにする",
-    )
-    parser.add_argument(
-        "--highres_fix_steps",
-        type=int,
-        default=28,
-        help="1st stage steps for highres fix / highres fixの最初のステージのステップ数",
-    )
-    parser.add_argument(
-        "--highres_fix_strength",
-        type=float,
-        default=None,
-        help="1st stage img2img strength for highres fix / highres fixの最初のステージのimg2img時のstrength、省略時はstrengthと同じ",
-    )
-    parser.add_argument(
-        "--highres_fix_save_1st",
-        action="store_true",
-        help="save 1st stage images for highres fix / highres fixの最初のステージの画像を保存する",
-    )
-    parser.add_argument(
-        "--highres_fix_latents_upscaling",
-        action="store_true",
-        help="use latents upscaling for highres fix / highres fixでlatentで拡大する",
-    )
-    parser.add_argument(
-        "--highres_fix_upscaler",
-        type=str,
-        default=None,
-        help="upscaler module for highres fix / highres fixで使うupscalerのモジュール名",
-    )
-    parser.add_argument(
-        "--highres_fix_upscaler_args",
-        type=str,
-        default=None,
-        help="additional arguments for upscaler (key=value) / upscalerへの追加の引数",
-    )
-    parser.add_argument(
-        "--highres_fix_disable_control_net",
-        action="store_true",
-        help="disable ControlNet for highres fix / highres fixでControlNetを使わない",
-    )
-
-    parser.add_argument(
-        "--negative_scale",
-        type=float,
-        default=None,
-        help="set another guidance scale for negative prompt / ネガティブプロンプトのscaleを指定する",
-    )
-
-    parser.add_argument(
-        "--control_net_lllite_models",
-        type=str,
-        default=None,
-        nargs="*",
-        help="ControlNet models to use / 使用するControlNetのモデル名",
-    )
-    # parser.add_argument(
-    #     "--control_net_models", type=str, default=None, nargs="*", help="ControlNet models to use / 使用するControlNetのモデル名"
-    # )
-    # parser.add_argument(
-    #     "--control_net_preps", type=str, default=None, nargs="*", help="ControlNet preprocess to use / 使用するControlNetのプリプロセス名"
-    # )
-    parser.add_argument(
-        "--control_net_multipliers", type=float, default=None, nargs="*", help="ControlNet multiplier / ControlNetの適用率"
-    )
-    parser.add_argument(
-        "--control_net_ratios",
-        type=float,
-        default=None,
-        nargs="*",
-        help="ControlNet guidance ratio for steps / ControlNetでガイドするステップ比率",
-    )
-    parser.add_argument(
-        "--clip_vision_strength",
-        type=float,
-        default=None,
-        help="enable CLIP Vision Conditioning for img2img with this strength / img2imgでCLIP Vision Conditioningを有効にしてこのstrengthで処理する",
-    )
-
-    # Deep Shrink
-    parser.add_argument(
-        "--ds_depth_1",
-        type=int,
-        default=None,
-        help="Enable Deep Shrink with this depth 1, valid values are 0 to 8 / Deep Shrinkをこのdepthで有効にする",
-    )
-    parser.add_argument(
-        "--ds_timesteps_1",
-        type=int,
-        default=650,
-        help="Apply Deep Shrink depth 1 until this timesteps / Deep Shrink depth 1を適用するtimesteps",
-    )
-    parser.add_argument("--ds_depth_2", type=int, default=None, help="Deep Shrink depth 2 / Deep Shrinkのdepth 2")
-    parser.add_argument(
-        "--ds_timesteps_2",
-        type=int,
-        default=650,
-        help="Apply Deep Shrink depth 2 until this timesteps / Deep Shrink depth 2を適用するtimesteps",
-    )
-    parser.add_argument(
-        "--ds_ratio", type=float, default=0.5, help="Deep Shrink ratio for downsampling / Deep Shrinkのdownsampling比率"
-    )
-
-    # gradual latent
-    parser.add_argument(
-        "--gradual_latent_timesteps",
-        type=int,
-        default=None,
-        help="enable Gradual Latent hires fix and apply upscaling from this timesteps / Gradual Latent hires fixをこのtimestepsで有効にし、このtimestepsからアップスケーリングを適用する",
-    )
-    parser.add_argument(
-        "--gradual_latent_ratio",
-        type=float,
-        default=0.5,
-        help=" this size ratio, 0.5 means 1/2 / Gradual Latent hires fixをこのサイズ比率で有効にする、0.5は1/2を意味する",
-    )
-    parser.add_argument(
-        "--gradual_latent_ratio_step",
-        type=float,
-        default=0.125,
-        help="step to increase ratio for Gradual Latent / Gradual Latentのratioをどのくらいずつ上げるか",
-    )
-    parser.add_argument(
-        "--gradual_latent_every_n_steps",
-        type=int,
-        default=3,
-        help="steps to increase size of latents every this steps for Gradual Latent / Gradual Latentでlatentsのサイズをこのステップごとに上げる",
-    )
-    parser.add_argument(
-        "--gradual_latent_s_noise",
-        type=float,
-        default=1.0,
-        help="s_noise for Gradual Latent / Gradual Latentのs_noise",
-    )
-    parser.add_argument(
-        "--gradual_latent_unsharp_params",
-        type=str,
-        default=None,
-        help="unsharp mask parameters for Gradual Latent: ksize, sigma, strength, target-x (1 means True). `3,0.5,0.5,1` or `3,1.0,1.0,0` is recommended /"
-        + " Gradual Latentのunsharp maskのパラメータ: ksize, sigma, strength, target-x. `3,0.5,0.5,1` または `3,1.0,1.0,0` が推奨",
-    )
-
-    # # parser.add_argument(
-    #     "--control_net_image_path", type=str, default=None, nargs="*", help="image for ControlNet guidance / ControlNetでガイドに使う画像"
-    # )
-
-    return parser
 
 
 if __name__ == "__main__":

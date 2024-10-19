@@ -1,4 +1,3 @@
-import time
 import os
 import glob
 import json
@@ -6,50 +5,14 @@ import logging
 from aws.aws_sqs import receive_messages, delete_message, send_image_success_message, send_image_failure_message
 from aws.aws_s3 import upload_image_to_s3
 
-from sdxl_gen_img import setup_parser, setup_logging, main
-
-from sdxl_gen_img_preloader import preload, preload_lora
+from sdxl_gen_img import main
 
 logger = logging.getLogger(__name__)
 
 CHARACTER_ID = int(os.environ("CHARACTER_ID"))
 
-'''
-이 코드에서 Stable Diffusion 모델과 LoRA 모델을 preload합니다.
-'''
-parser = setup_parser()
-args = parser.parse_args()
-
-args.ckpt = "./models/sd_xl_base_1.0_0.9vae.safetensors"
-args.xformers = True
-args.bf16 = True
-args.W = 512
-args.H = 512
-args.scale = 7.0
-args.sampler = 'dpmsolver++'
-args.steps = 70
-args.batch_size = 1
-args.images_per_prompt = 1
-
-setup_logging(args)
-
-
-args.network_module = ['networks.lora']
-args.network_weights = [os.environ("CHARACTER_LORA_PATH")]
-args.network_mul = [float(os.environ("CHARACTER_LORA_MUL"))]
-
-# Preload models
-dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
-networks, network_default_muls, network_pre_calc = preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device)
-
 def generate_image_sdxl_with_lora(prompt, output_dir):
-    parser = setup_parser()
-    args = parser.parse_args()
-
-    args.outdir = output_dir
-    args.prompt = prompt
-
-    main(args)
+    main(prompt, output_dir)
 
 
 '''
