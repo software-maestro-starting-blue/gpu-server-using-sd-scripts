@@ -12,6 +12,8 @@ from sdxl_gen_img_preloader import preload, preload_lora
 
 logger = logging.getLogger(__name__)
 
+CHARACTER_ID = os.environ("CHARACTER_ID")
+
 '''
 이 코드에서 Stable Diffusion 모델과 LoRA 모델을 preload합니다.
 '''
@@ -33,37 +35,21 @@ setup_logging(args)
 
 
 args.network_module = ['networks.lora']
-lora_paths = {
-    2: "./lora/model_2.safetensors",
-}
-lora_muls = {
-    2: 1.0,
-}
+args.network_weights = [os.environ("CHARACTER_LORA_PATH")]
+args.network_mul = [float(os.environ("CHARACTER_LORA_MUL"))]
 
+# Preload models
+dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
+networks, network_default_muls, network_pre_calc = preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device)
 
-preload_model_by_character_id = {}
-preload_loras = {}
-
-for character_id, lora_path in lora_paths.items():
-    args.network_weights = [lora_path]
-    args.network_mul = [lora_muls[character_id]]
-
-    dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
-    
-    preload_model_by_character_id[character_id] = (dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device)
-    preload_loras[character_id] = preload_lora(args, vae, text_encoder1, text_encoder2, unet, dtype, device)
-
-def generate_image_sdxl_with_lora(character_id, prompt, output_dir):
+def generate_image_sdxl_with_lora(prompt, output_dir):
     parser = setup_parser()
     args = parser.parse_args()
 
     args.outdir = output_dir
     args.prompt = prompt
 
-    dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload_model_by_character_id[character_id]
-    networks, network_default_muls, network_pre_calc = preload_loras[character_id]
-
-    main(args, dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device, networks, network_default_muls, network_pre_calc)
+    main(args)
 
 
 '''
@@ -101,10 +87,14 @@ def run():
             diary_id, character_id, prompt, grid_position = extract_message(message_body)
             logger.info("Processing {diary_id}/{grid_position}...")
 
+            if character_id != CHARACTER_ID:
+                logger.info(f"Character ID {character_id} does not match {CHARACTER_ID}. Skipping...")
+                continue
+
             output_dir = f"./output/{diary_id}_{grid_position}"
 
             try:
-                generate_image_sdxl_with_lora(character_id, prompt, output_dir)
+                generate_image_sdxl_with_lora(prompt, output_dir)
                 image_path = get_image_path(output_dir)
 
                 upload_image_to_s3(image_path, diary_id, grid_position)

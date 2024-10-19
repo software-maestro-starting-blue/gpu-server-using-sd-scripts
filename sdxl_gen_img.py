@@ -1472,10 +1472,9 @@ class BatchData(NamedTuple):
     base: BatchDataBase
     ext: BatchDataExt
 
+from gpu_server_runner import *
 
-def main(args, 
-         dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device,
-         networks, network_default_muls, network_pre_calc):
+def main(args):
     # upscalerの指定があれば取得する
     upscaler = None
     if args.highres_fix_upscaler:
