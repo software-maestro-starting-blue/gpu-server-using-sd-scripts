@@ -9,7 +9,7 @@ from sdxl_gen_img import main
 
 logger = logging.getLogger(__name__)
 
-CHARACTER_ID = int(os.environ("CHARACTER_ID"))
+CHARACTER_ID = int(os.environ["CHARACTER_ID"])
 
 def generate_image_sdxl_with_lora(prompt, output_dir):
     main(prompt, output_dir)

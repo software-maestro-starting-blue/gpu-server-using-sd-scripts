@@ -2136,8 +2136,8 @@ setup_logging(args)
 
 
 args.network_module = ['networks.lora']
-args.network_weights = [os.environ("CHARACTER_LORA_PATH")]
-args.network_mul = [float(os.environ("CHARACTER_LORA_MUL"))]
+args.network_weights = [os.environ["CHARACTER_LORA_PATH"]]
+args.network_mul = [float(os.environ["CHARACTER_LORA_MUL"])]
 
 # Preload models
 dtype, highres_fix, text_encoder1, text_encoder2, vae, unet, tokenizer1, tokenizer2, scheduler_num_noises_per_step, noise_manager, scheduler, device = preload(args)
