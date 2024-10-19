@@ -12,7 +12,7 @@ from sdxl_gen_img_preloader import preload, preload_lora
 
 logger = logging.getLogger(__name__)
 
-CHARACTER_ID = os.environ("CHARACTER_ID")
+CHARACTER_ID = int(os.environ("CHARACTER_ID"))
 
 '''
 이 코드에서 Stable Diffusion 모델과 LoRA 모델을 preload합니다.
