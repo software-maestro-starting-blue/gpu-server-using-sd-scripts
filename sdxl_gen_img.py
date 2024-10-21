@@ -2145,7 +2145,7 @@ networks, network_default_muls, network_pre_calc = preload_lora(args, vae, text_
 
 
 
-def main(output_dir, prompt):
+def main(prompt, output_dir):
 
     args.outdir = output_dir
     args.prompt = prompt
