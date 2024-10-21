@@ -48,7 +48,7 @@ def run():
 
         for message_body, message_receipt_handle in messages:
             diary_id, character_id, prompt, grid_position = extract_message(message_body)
-            logger.info("Processing {diary_id}/{grid_position}...")
+            logger.info(f"Processing {diary_id}/{grid_position}...")
 
             if character_id != CHARACTER_ID:
                 logger.info(f"Character ID {character_id} does not match {CHARACTER_ID}. Skipping...")
